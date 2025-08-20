@@ -1,37 +1,54 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import styled, { createGlobalStyle, keyframes } from "styled-components";
 
+// ===================== Firebase (cross-device realtime) =====================
+import { initializeApp } from "firebase/app";
+import {
+  getFirestore, collection, addDoc, onSnapshot,
+  serverTimestamp, query, orderBy, deleteDoc, doc,
+  writeBatch, getDocs
+} from "firebase/firestore";
+
+// FYLL INN fra Firebase Console (Project settings → Your apps → Web app)
+const firebaseConfig = {
+  apiKey: "AIzaSyAksjWsBY1BwAgn5tQOx0rWE_jyvIsCQf0",
+  authDomain: "secker-b1631.firebaseapp.com",
+  projectId: "secker-b1631",
+  storageBucket: "secker-b1631.firebasestorage.app",
+  messagingSenderId: "982111941240",
+  appId: "1:982111941240:web:80e5e558325718dca3338d",
+  measurementId: "G-FMXENEMH1Y"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const WISHES_COL = "dj_wishes_live_v1"; // endre om du vil separere events
+
 /**
- * DJ Wish Wall — React + styled-components
+ * DJ Wish Wall — React + styled-components + Firebase
  * - Venstre: Skjema (request) | Høyre: Publikumsvegg (output)
- * - Veggen viser KUN navnet, starter ØVERST og er horisontalt midtstilt
- * - Admin på #/admin (endre passord under)
- * - localStorage + live sync + BroadcastChannel (instant uten refresh)
- * - 100vh layout; paneler scroller inni seg ved behov
- * - Vinyl-ikon spinner sakte + “boost” ved innsending
+ * - Ønsker lagres i Firestore → funker på tvers av enheter, live
+ * - Spotlight HAGEN VINBAR (BroadcastChannel, uten refresh), stjerner, vinyl-boost
  * - Event: Vollen Vinbar | Laget av Vintra Studio
- * - ⭐ Stjerne-knapp + tekst: "Trykk om du liker DJ-en!"
- * - Spotlight: “HAGEN VINBAR” i 30s, smooth inn/ut + “Takk for at du kommer!” over
  */
 
-// ===================== Config =====================
+// ===================== Config (lokale ting) =====================
 const ADMIN_PASSWORD = "Secker1408";
-const STORAGE_KEY = "dj_wishes_v5";
 const AUTH_KEY = "dj_admin_authed";
 
-// Stjerner (likes)
+// Stjerner (lokal teller – si ifra hvis du vil sync’e den også i sky)
 const STAR_KEY = "dj_wishes_stars_v1";
 const STAR_VOTED_KEY = "dj_wishes_star_vote_v1";
 
-// Spotlight-overlay
-const SPOTLIGHT_KEY = "dj_wishes_spotlight_v1"; // {active:boolean, message:string, until:number, id:string}
+// Spotlight-overlay (kan lett flyttes til Firestore senere om ønskelig)
+const SPOTLIGHT_KEY = "dj_wishes_spotlight_v1"; // {active, message, until, id}
 const SPOTLIGHT_SECONDS = 30;
 const SPOTLIGHT_MESSAGE = "HAGEN VINBAR";
 
-// Channel for instant cross-tab messaging
+// Cross-tab kanaI (samme maskin). For tvers av enheter bruker vi Firebase for ønsker.
 const CHANNEL_NAME = "dj_wish_events";
 
-// Logo bak veggen (valgfri)
+// Logo bak publikumsvegg
 const WALL_WATERMARK_URL = "/vinbar.png";
 const WATERMARK_OPACITY = 0.30;
 const WATERMARK_MAX_W = "70%";
@@ -55,26 +72,9 @@ const Global = createGlobalStyle`
   }
 `;
 
-// ===================== Utils =====================
+// ===================== Utils (lokale) =====================
 function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-function loadWishes() {
-  try { const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : []; }
-  catch { return []; }
-}
-function saveWishes(list) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-  window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }));
-}
-function useLocalStorageSync(key, parser) {
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    const onStorage = (e) => { if (!e || e.key === key) setTick(x => x + 1); };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [key]);
-  return useMemo(() => parser(), [parser, tick]);
 }
 
 // BroadcastChannel helper
@@ -89,7 +89,7 @@ function getBC() {
   return null;
 }
 
-// Stars (likes)
+// Stars (likes) – lokal
 function loadStars() {
   try { const raw = localStorage.getItem(STAR_KEY); return raw ? Math.max(0, parseInt(raw, 10) || 0) : 0; }
   catch { return 0; }
@@ -105,7 +105,7 @@ function setVotedLocal(v) {
   window.dispatchEvent(new StorageEvent("storage", { key: STAR_VOTED_KEY }));
 }
 
-// Spotlight
+// Spotlight (lokal)
 function loadSpotlight() {
   try {
     const raw = localStorage.getItem(SPOTLIGHT_KEY);
@@ -121,6 +121,51 @@ function saveSpotlight(obj) {
 function clearSpotlight() {
   localStorage.removeItem(SPOTLIGHT_KEY);
   window.dispatchEvent(new StorageEvent("storage", { key: SPOTLIGHT_KEY }));
+}
+
+// ===================== Firebase Wishes Hooks/Actions =====================
+function useWishesRealtime() {
+  const [wishes, setWishes] = useState([]);
+  useEffect(() => {
+    const q = query(collection(db, WISHES_COL), orderBy("createdAtMs", "desc"));
+    const unsub = onSnapshot(q, (snap) => {
+      const arr = snap.docs.map(d => {
+        const data = d.data() || {};
+        const createdAt =
+          data.createdAt?.toDate?.() ||
+          (data.createdAtMs ? new Date(data.createdAtMs) : null);
+        return {
+          id: d.id,
+          name: data.name || "",
+          wish: data.wish || "",
+          createdAt,
+        };
+      });
+      setWishes(arr);
+    });
+    return () => unsub();
+  }, []);
+  return wishes;
+}
+
+async function addWishToCloud(name, wish) {
+  await addDoc(collection(db, WISHES_COL), {
+    name,
+    wish,
+    createdAt: serverTimestamp(),
+    createdAtMs: Date.now(), // stabil sortering mens serverTimestamp resolves
+  });
+}
+
+async function deleteWishFromCloud(id) {
+  await deleteDoc(doc(db, WISHES_COL, id));
+}
+
+async function clearAllWishesCloud() {
+  const snap = await getDocs(collection(db, WISHES_COL));
+  const batch = writeBatch(db);
+  snap.forEach(d => batch.delete(d.ref));
+  await batch.commit();
 }
 
 // ===================== Vinyl SVG =====================
@@ -219,27 +264,18 @@ const SpotlightOverlay = styled.div`
 `;
 const SpotlightInner = styled.div`max-width: 90ch;`;
 const SpotlightKicker = styled.div`
-  font-weight: 800;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  margin-bottom: 8px;
-  font-size: clamp(12px, 2.2vw, 18px);
-  opacity: .9;
+  font-weight: 800; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 8px;
+  font-size: clamp(12px, 2.2vw, 18px); opacity: .9;
   background: linear-gradient(90deg, #22d3ee, #8b5cf6, #ff2bd1);
-  -webkit-background-clip: text; background-clip: text;
-  color: transparent;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
 `;
 const SpotlightTitle = styled.h1`
   margin: 0 0 10px 0;
-  font-family: Montserrat, Inter, sans-serif;
-  font-weight: 900;
-  letter-spacing: 4px;
-  font-size: clamp(36px, 9vw, 120px);
-  line-height: 1.05;
+  font-family: Montserrat, Inter, sans-serif; font-weight: 900; letter-spacing: 4px;
+  font-size: clamp(36px, 9vw, 120px); line-height: 1.05;
   background: linear-gradient(90deg, #22d3ee, #8b5cf6, #ff2bd1, #22d3ee);
   background-size: 300% 100%;
-  -webkit-background-clip: text; background-clip: text;
-  color: transparent;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
   animation: ${shimmer} 6s linear infinite, ${neonPulse} 2.6s ease-in-out infinite alternate;
 `;
 const SpotlightSubtitle = styled.div`opacity: .9; font-size: clamp(14px, 2.8vw, 18px);`;
@@ -274,8 +310,7 @@ const EventTag = styled.span`
 // ⭐ Star block
 const StarBlock = styled.div`
   display: flex; align-items: center; gap: 10px;
-  margin-left: auto; margin-right: 12px;
-  flex-wrap: wrap;
+  margin-left: auto; margin-right: 12px; flex-wrap: wrap;
 `;
 const StarCaption = styled.span`font-size: 12px; opacity: .9; white-space: nowrap;`;
 const StarButton = styled.button`
@@ -424,7 +459,7 @@ const AdminGate = styled(Panel)`max-width: 520px; margin: 0 auto; display: grid;
 // ===================== App =====================
 export default function App() {
   const route = useHashRoute();
-  const wishes = useLocalStorageSync(STORAGE_KEY, loadWishes);
+  const wishes = useWishesRealtime(); // <<— skybasert realtime
   const stars = useLocalStorageSync(STAR_KEY, loadStars);
   const [voted, setVotedState] = useState(() => getVoted());
 
@@ -436,7 +471,7 @@ export default function App() {
 
   const total = wishes.length;
   const uniqueNames = new Set(wishes.map(w => w.name.trim().toLowerCase())).size;
-  const latestAt = wishes[0]?.createdAt ? new Date(wishes[0].createdAt) : null;
+  const latestAt = wishes[0]?.createdAt ?? null;
 
   const go = (path) => () => { window.location.hash = path; };
 
@@ -470,7 +505,7 @@ export default function App() {
         </Nav>
       </TopBar>
 
-      {route === "/admin" ? <AdminPage /> : <WallPage total={total} uniqueNames={uniqueNames} latestAt={latestAt} />}
+      {route === "/admin" ? <AdminPage wishes={wishes} /> : <WallPage wishes={wishes} total={total} uniqueNames={uniqueNames} latestAt={latestAt} />}
 
       <Footer>© {new Date().getFullYear()} DJ Wish Wall — Laget av Vintra Studio.</Footer>
     </AppWrap>
@@ -488,12 +523,21 @@ function useHashRoute() {
 }
 function cleanHash() { const h = window.location.hash.replace(/^#/, ""); return h || "/"; }
 
+function useLocalStorageSync(key, parser) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const onStorage = (e) => { if (!e || e.key === key) setTick(x => x + 1); };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [key]);
+  return useMemo(() => parser(), [parser, tick]);
+}
+
 // ===================== Pages =====================
-function WallPage({ total, uniqueNames, latestAt }) {
-  const wishes = useLocalStorageSync(STORAGE_KEY, loadWishes);
+function WallPage({ wishes, total, uniqueNames, latestAt }) {
   const spotlightFromStorage = useLocalStorageSync(SPOTLIGHT_KEY, loadSpotlight);
 
-  // Lokalt spotlight-state for INSTANT visning (uavhengig av storage-event)
+  // Lokalt spotlight-state for INSTANT visning
   const [localSpotlight, setLocalSpotlight] = useState(null);
   const [name, setName] = useState("");
   const [wish, setWish] = useState("");
@@ -513,17 +557,17 @@ function WallPage({ total, uniqueNames, latestAt }) {
     return () => clearInterval(t);
   }, []);
 
-  // Lytt på BroadcastChannel og vis overlay med en gang (også persister til storage)
+  // Lytt på BroadcastChannel for spotlight
   useEffect(() => {
     const ch = getBC();
     if (!ch) return;
     const onMsg = (e) => {
       const data = e.data;
       if (data?.type === "spotlight" && data.payload) {
-        setOverlayExiting(false);                 // reset ev. exit-state
-        setLocalSpotlight(data.payload);          // lokal visning
+        setOverlayExiting(false);
+        setLocalSpotlight(data.payload);
         try { saveSpotlight(data.payload); } catch {}
-        setNowTick(Date.now());                   // kick rerender
+        setNowTick(Date.now());
       }
     };
     ch.addEventListener ? ch.addEventListener("message", onMsg) : (ch.onmessage = onMsg);
@@ -532,11 +576,10 @@ function WallPage({ total, uniqueNames, latestAt }) {
     };
   }, []);
 
-  // Velg gjeldende spotlight (lokal > storage)
   const currentSpotlight = localSpotlight || spotlightFromStorage;
   const remainingMs = currentSpotlight?.until ? Math.max(0, currentSpotlight.until - nowTick) : 0;
 
-  // Smooth exit: la overlay fade ut, rydd så state og storage
+  // Smooth exit på overlay
   useEffect(() => {
     const active = currentSpotlight?.active;
     if (!active) return;
@@ -551,20 +594,22 @@ function WallPage({ total, uniqueNames, latestAt }) {
     }
   }, [remainingMs, currentSpotlight?.active, overlayExiting]);
 
-  const onSubmit = (e) => {
+  const onSubmit = async (e) => {
     e.preventDefault();
     const trimmedName = name.trim();
     const trimmedWish = wish.trim();
     if (!trimmedName || !trimmedWish) { setToast("Skriv inn navn og ønske ✍️"); return; }
-    const entry = { id: uid(), name: trimmedName, wish: trimmedWish, createdAt: Date.now() };
-    const list = [entry, ...loadWishes()].slice(0, 5000);
-    saveWishes(list);
 
-    const vinyl = document.getElementById('vinyl-svg');
-    if (vinyl) { vinyl.classList.add('boost'); setTimeout(() => vinyl.classList.remove('boost'), 1200); }
-
-    setName(""); setWish(""); setToast("Takk! Navnet ditt vises på veggen. 🎶");
-    nameRef.current?.focus();
+    try {
+      await addWishToCloud(trimmedName, trimmedWish);
+      const vinyl = document.getElementById('vinyl-svg');
+      if (vinyl) { vinyl.classList.add('boost'); setTimeout(() => vinyl.classList.remove('boost'), 1200); }
+      setName(""); setWish(""); setToast("Takk! Navnet ditt vises på veggen. 🎶");
+      nameRef.current?.focus();
+    } catch (err) {
+      console.error(err);
+      setToast("Kunne ikke sende ønsket. Sjekk nett/konfig.");
+    }
   };
 
   const showOverlay = (currentSpotlight?.active && remainingMs > 0) || overlayExiting;
@@ -628,9 +673,9 @@ function WallPage({ total, uniqueNames, latestAt }) {
             ) : (
               <NamesGrid>
                 {wishes.map(w => (
-                  <NameCard key={w.id} title={new Date(w.createdAt).toLocaleString()}>
+                  <NameCard key={w.id} title={w.createdAt ? w.createdAt.toLocaleString() : ""}>
                     <div>{w.name}</div>
-                    <Time>{timeAgo(new Date(w.createdAt))}</Time>
+                    <Time>{w.createdAt ? timeAgo(w.createdAt) : "nå"}</Time>
                   </NameCard>
                 ))}
               </NamesGrid>
@@ -656,11 +701,11 @@ function StatBox({ label, value }) {
   );
 }
 
-function AdminPage() {
+function AdminPage({ wishes }) {
   const authed = useAuthed();
   const [attempted, setAttempted] = useState(false);
   if (!authed) return <AdminLogin onAttempt={() => setAttempted(true)} attempted={attempted} />;
-  return <AdminPanel />;
+  return <AdminPanel wishes={wishes} />;
 }
 
 function useAuthed() {
@@ -706,8 +751,7 @@ function AdminLogin({ onAttempt, attempted }) {
   );
 }
 
-function AdminPanel() {
-  const wishes = useLocalStorageSync(STORAGE_KEY, loadWishes);
+function AdminPanel({ wishes }) {
   const [filter, setFilter] = useState("");
 
   const filtered = wishes.filter(w => {
@@ -716,10 +760,17 @@ function AdminPanel() {
     return w.name.toLowerCase().includes(q) || w.wish.toLowerCase().includes(q);
   });
 
-  const clearAll = () => { if (!window.confirm("Slette alle ønsker?")) return; saveWishes([]); };
-  const remove = (id) => { saveWishes(loadWishes().filter(w => w.id !== id)); };
+  // Egen "er du sikker?" UI (ingen window.confirm → slipper eslint-feil)
+  const [confirmClear, setConfirmClear] = useState(false);
+
   const exportJson = () => {
-    const blob = new Blob([JSON.stringify(wishes, null, 2)], { type: "application/json"});
+    const plain = wishes.map(w => ({
+      id: w.id,
+      name: w.name,
+      wish: w.wish,
+      createdAt: w.createdAt ? w.createdAt.toISOString() : null
+    }));
+    const blob = new Blob([JSON.stringify(plain, null, 2)], { type: "application/json"});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = `dj_wishes_${new Date().toISOString().replace(/[:.]/g,'-')}.json`;
@@ -727,7 +778,7 @@ function AdminPanel() {
   };
   const logout = () => { localStorage.removeItem(AUTH_KEY); window.dispatchEvent(new StorageEvent("storage", { key: AUTH_KEY })); };
 
-  // Spotlight-trigger: generér unikt id hver gang for sikker re-render
+  // Spotlight-trigger (30s) — instant via BroadcastChannel
   const triggerSpotlight = () => {
     const obj = {
       id: uid(),
@@ -735,9 +786,9 @@ function AdminPanel() {
       message: SPOTLIGHT_MESSAGE,
       until: Date.now() + SPOTLIGHT_SECONDS * 1000
     };
-    saveSpotlight(obj);                              // persist + storage event
+    saveSpotlight(obj);
     const ch = getBC();
-    ch?.postMessage({ type: "spotlight", payload: obj }); // instant sync alle visninger
+    ch?.postMessage({ type: "spotlight", payload: obj });
   };
 
   return (
@@ -751,10 +802,22 @@ function AdminPanel() {
             <Label>Søk i ønsker</Label>
             <Input placeholder="Filtrer på navn eller tekst…" value={filter} onChange={(e)=>setFilter(e.target.value)} />
           </div>
-          <div style={{display:'flex', gap:10, flexWrap:'wrap'}}>
+          <div style={{display:'flex', gap:10, flexWrap:'wrap', alignItems:'center'}}>
             <NavButton type="button" onClick={exportJson}>Eksporter JSON</NavButton>
             <NavButton type="button" onClick={logout}>Logg ut</NavButton>
-            <Danger type="button" onClick={clearAll}>Tøm alle</Danger>
+
+            {!confirmClear ? (
+              <Danger type="button" onClick={()=>setConfirmClear(true)}>Tøm alle</Danger>
+            ) : (
+              <div style={{display:'inline-flex', gap:8, alignItems:'center'}}>
+                <span>Bekreft tømming?</span>
+                <Danger type="button" onClick={async()=>{
+                  await clearAllWishesCloud();
+                  setConfirmClear(false);
+                }}>Ja, tøm</Danger>
+                <NavButton type="button" onClick={()=>setConfirmClear(false)}>Avbryt</NavButton>
+              </div>
+            )}
           </div>
 
           <Divider />
@@ -790,8 +853,10 @@ function AdminPanel() {
                   <tr key={w.id}>
                     <td><strong>{w.name}</strong></td>
                     <td><div style={{whiteSpace:'pre-wrap'}}>{w.wish}</div></td>
-                    <td>{new Date(w.createdAt).toLocaleString()}</td>
-                    <td><Danger onClick={()=>remove(w.id)}>Slett</Danger></td>
+                    <td>{w.createdAt ? w.createdAt.toLocaleString() : "—"}</td>
+                    <td>
+                      <Danger onClick={()=>deleteWishFromCloud(w.id)}>Slett</Danger>
+                    </td>
                   </tr>
                 ))
               )}
@@ -805,6 +870,7 @@ function AdminPanel() {
 
 // ===================== Helpers =====================
 function timeAgo(date) {
+  if (!date) return "—";
   const now = new Date();
   const diff = Math.floor((now - date) / 1000);
   if (diff < 60) return `${diff}s siden`;
