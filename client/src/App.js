@@ -260,8 +260,14 @@ const SpotlightOverlay = styled.div`
     rgba(6,6,10,0.96);
   display: flex; align-items: center; justify-content: center; text-align: center;
   padding: 24px;
+
+  /* VIKTIG: Ikke blokker klikk mens vi fader ut */
+  pointer-events: ${props => props.exiting ? 'none' : 'auto'};
+  user-select: none;
+
   animation: ${props => props.exiting ? fadeOut : fadeIn} 420ms ease forwards;
 `;
+
 const SpotlightInner = styled.div`max-width: 90ch;`;
 const SpotlightKicker = styled.div`
   font-weight: 800; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 8px;
@@ -617,15 +623,26 @@ function WallPage({ wishes, total, uniqueNames, latestAt }) {
 
   return (
     <>
-      {showOverlay && (
-        <SpotlightOverlay exiting={overlayExiting}>
-          <SpotlightInner>
-            <SpotlightKicker>Takk for at du kommer!</SpotlightKicker>
-            <SpotlightTitle>{currentSpotlight?.message || SPOTLIGHT_MESSAGE}</SpotlightTitle>
-            {!overlayExiting && <SpotlightSubtitle>Tilbake om {remainingSec}s</SpotlightSubtitle>}
-          </SpotlightInner>
-        </SpotlightOverlay>
-      )}
+{showOverlay && (
+  <SpotlightOverlay
+    exiting={overlayExiting}
+    onAnimationEnd={() => {
+      // Når fade-out er ferdig: fjern state så elementet forsvinner helt
+      if (overlayExiting) {
+        setOverlayExiting(false);
+        setLocalSpotlight(null);
+        clearSpotlight();
+      }
+    }}
+  >
+    <SpotlightInner>
+      <SpotlightKicker>Takk for at du kommer!</SpotlightKicker>
+      <SpotlightTitle>{currentSpotlight?.message || SPOTLIGHT_MESSAGE}</SpotlightTitle>
+      {!overlayExiting && <SpotlightSubtitle>Tilbake om {remainingSec}s</SpotlightSubtitle>}
+    </SpotlightInner>
+  </SpotlightOverlay>
+)}
+
 
       <Page>
         {/* VENSTRE: Skjema */}
