@@ -7,15 +7,16 @@ import styled, { createGlobalStyle } from "styled-components";
  * - Veggen viser KUN navnet, starter ØVERST og er midtstilt horisontalt
  * - Admin på #/admin (endre passord under)
  * - localStorage + live sync
- * - 100vh layout (ingen sidescroll); paneler scroller inni seg ved behov
+ * - 100vh layout; paneler scroller inni seg ved behov
  * - Vinyl-ikon spinner sakte + får rask "boost" ved innsending
  * - Event: Vollen Vinbar | Laget av Vintra Studio
  * - Vannmerke-logo bak publikumsveggen (svakt synlig)
+ * - NYTT: bedre mobiltilpasning + skjul sorte topp-knapper på mobil
  */
 
 // ===================== Config =====================
 const ADMIN_PASSWORD = "Secker1408";      // endre før deploy
-const STORAGE_KEY = "dj_wishes_v5";     // bump for å nullstille
+const STORAGE_KEY = "dj_wishes_v5";       // bump for å nullstille
 const AUTH_KEY = "dj_admin_authed";
 
 // Bytt til din egen logo (PNG/SVG). Tom streng = ingen logo.
@@ -143,7 +144,11 @@ const EventTag = styled.span`
   background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
 `;
 
-const Nav = styled.nav`display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;`;
+const Nav = styled.nav`
+  display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;
+  /* Skjul alle topp-knapper på mobil */
+  @media (max-width: 640px) { display: none; }
+`;
 const NavButton = styled.button`
   appearance: none; border: 0; cursor: pointer;
   padding: 10px 14px; border-radius: 12px; color: #fff; font-weight: 700;
@@ -152,7 +157,6 @@ const NavButton = styled.button`
   transition: transform .15s ease, border-color .2s ease;
   &:hover { transform: translateY(-1px); border-color: rgba(255,255,255,0.3); }
   &:active { transform: translateY(0); }
-  @media (max-width: 520px) { width: 100%; }
 `;
 
 const Footer = styled.footer`padding: 10px 16px; text-align: center; opacity: .75; font-size: 12px;`;
@@ -207,9 +211,10 @@ const Submit = styled.button`
 const Hint = styled.p`margin: 6px 0 0; font-size: 12px; opacity: .75;`;
 
 // Wall (øverst + horisontalt midtstilt)
-const WallWrap = styled(Panel)`display: grid; grid-template-rows: auto 1fr; min-height: 0; height: 100%;`;
+const WallWrap = styled(Panel)`
+  display: grid; grid-template-rows: auto 1fr; min-height: 0; height: 100%;
+`;
 
-// Lag over vannmerket
 const ContentLayer = styled.div`position: relative; z-index: 1;`;
 
 // Vannmerke-logo (bak alt innhold i WallWrap)
@@ -224,17 +229,18 @@ const Watermark = styled.div`
     filter: drop-shadow(0 0 24px rgba(255,255,255,0.08));
     mix-blend-mode: screen;
   }
+  @media (max-width: 640px) {
+    opacity: 0.18;
+    img { max-width: 80%; max-height: 60%; }
+  }
 `;
 
-/* Scrollbeholder for veggen — (erstatter withComponent) */
+// Scrollbeholder for veggen
 const NamesViewport = styled.div`
-  position: relative;
-  z-index: 1;
-  height: 100%;
-  overflow: auto;
+  position: relative; z-index: 1; height: 100%; overflow: auto;
 `;
 
-/* Grid inni — øverst + horisontalt midtstilt */
+// Grid inni — øverst + horisontalt midtstilt
 const NamesGrid = styled.div`
   padding: 8px 6px 8px 0;
   display: grid;
@@ -242,12 +248,13 @@ const NamesGrid = styled.div`
   grid-auto-rows: minmax(56px, auto);
   gap: 12px;
   height: max-content;
-
   align-content: start;      /* legg rader helt øverst */
   justify-content: center;   /* midtstill kolonnene horisontalt */
 
-  @media (max-width: 480px) {
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  @media (max-width: 640px) {
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 10px;
+    padding-right: 4px;
   }
 `;
 
@@ -258,9 +265,16 @@ const NameCard = styled.div`
   text-align: center;
   font-weight: 800;
   backdrop-filter: blur(8px);
+  @media (max-width: 640px) { padding: 12px; }
 `;
 const Time = styled.div`font-size: 11px; opacity: .6; margin-top: 4px;`;
 const EmptyState = styled.div`opacity: .7; text-align: center; padding: 24px; font-size: 14px;`;
+
+// Stats (gjort til egen styled for mobil-grid)
+const StatsRow = styled.div`
+  display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0,1fr));
+  @media (max-width: 640px) { grid-template-columns: 1fr 1fr; }
+`;
 
 // Admin
 const AdminWrap = styled(Panel)`display: grid; grid-template-rows: auto 1fr; min-height: 0; height: 100%;`;
@@ -300,6 +314,8 @@ export default function App() {
             <EventTag>Event: Vollen Vinbar</EventTag>
           </TitleWrap>
         </Brand>
+
+        {/* Skjules på mobil av media query i <Nav> */}
         <Nav>
           <NavButton onClick={go("")}>Publikumsvegg</NavButton>
           <NavButton onClick={go("/admin")}>Admin</NavButton>
@@ -389,11 +405,11 @@ function WallPage({ total, uniqueNames, latestAt }) {
 
         <Divider />
         <PanelTitle>Statistikk</PanelTitle>
-        <div style={{display:'grid', gap:12, gridTemplateColumns:'repeat(3, minmax(0,1fr))'}}>
+        <StatsRow>
           <StatBox label="Totalt innsendt" value={total} />
           <StatBox label="Unike navn" value={uniqueNames} />
           <StatBox label="Siste innsendelse" value={latestAt ? timeAgo(latestAt) : "—"} />
-        </div>
+        </StatsRow>
       </Panel>
 
       {/* HØYRE: Publikumsvegg + vannmerke */}
