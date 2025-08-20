@@ -10,10 +10,8 @@ import styled, { createGlobalStyle, keyframes } from "styled-components";
  * - 100vh layout; paneler scroller inni seg ved behov
  * - Vinyl-ikon spinner sakte + “boost” ved innsending
  * - Event: Vollen Vinbar | Laget av Vintra Studio
- * - Vannmerke-logo bak publikumsveggen (svakt synlig)
- * - Mobiltilpasset, skjuler topp-knapper på mobil
  * - ⭐ Stjerne-knapp + tekst: "Trykk om du liker DJ-en!"
- * - Admin-knapp viser “HAGEN VINBAR” i 30s med smooth inn/ut
+ * - Spotlight: “HAGEN VINBAR” i 30s, smooth inn/ut + “Takk for at du kommer!” over
  */
 
 // ===================== Config =====================
@@ -26,14 +24,14 @@ const STAR_KEY = "dj_wishes_stars_v1";
 const STAR_VOTED_KEY = "dj_wishes_star_vote_v1";
 
 // Spotlight-overlay
-const SPOTLIGHT_KEY = "dj_wishes_spotlight_v1"; // {active:boolean, message:string, until:number}
+const SPOTLIGHT_KEY = "dj_wishes_spotlight_v1"; // {active:boolean, message:string, until:number, id:string}
 const SPOTLIGHT_SECONDS = 30;
 const SPOTLIGHT_MESSAGE = "HAGEN VINBAR";
 
 // Channel for instant cross-tab messaging
 const CHANNEL_NAME = "dj_wish_events";
 
-// Logo bak veggen
+// Logo bak veggen (valgfri)
 const WALL_WATERMARK_URL = "/vinbar.png";
 const WATERMARK_OPACITY = 0.30;
 const WATERMARK_MAX_W = "70%";
@@ -220,6 +218,17 @@ const SpotlightOverlay = styled.div`
   animation: ${props => props.exiting ? fadeOut : fadeIn} 420ms ease forwards;
 `;
 const SpotlightInner = styled.div`max-width: 90ch;`;
+const SpotlightKicker = styled.div`
+  font-weight: 800;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  font-size: clamp(12px, 2.2vw, 18px);
+  opacity: .9;
+  background: linear-gradient(90deg, #22d3ee, #8b5cf6, #ff2bd1);
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent;
+`;
 const SpotlightTitle = styled.h1`
   margin: 0 0 10px 0;
   font-family: Montserrat, Inter, sans-serif;
@@ -482,8 +491,10 @@ function cleanHash() { const h = window.location.hash.replace(/^#/, ""); return 
 // ===================== Pages =====================
 function WallPage({ total, uniqueNames, latestAt }) {
   const wishes = useLocalStorageSync(STORAGE_KEY, loadWishes);
-  const spotlight = useLocalStorageSync(SPOTLIGHT_KEY, loadSpotlight);
+  const spotlightFromStorage = useLocalStorageSync(SPOTLIGHT_KEY, loadSpotlight);
 
+  // Lokalt spotlight-state for INSTANT visning (uavhengig av storage-event)
+  const [localSpotlight, setLocalSpotlight] = useState(null);
   const [name, setName] = useState("");
   const [wish, setWish] = useState("");
   const [toast, setToast] = useState("");
@@ -498,21 +509,21 @@ function WallPage({ total, uniqueNames, latestAt }) {
 
   // Tikk for nedtelling
   useEffect(() => {
-    if (!spotlight || !spotlight.until) return;
     const t = setInterval(() => setNowTick(Date.now()), 200);
     return () => clearInterval(t);
-  }, [spotlight?.until]);
+  }, []);
 
-  // Lytt direkte på BroadcastChannel for instant update
+  // Lytt på BroadcastChannel og vis overlay med en gang (også persister til storage)
   useEffect(() => {
     const ch = getBC();
     if (!ch) return;
     const onMsg = (e) => {
       const data = e.data;
       if (data?.type === "spotlight" && data.payload) {
-        // Oppdater både localStorage (for persist) og lokal tikk
-        saveSpotlight(data.payload);
-        setNowTick(Date.now());
+        setOverlayExiting(false);                 // reset ev. exit-state
+        setLocalSpotlight(data.payload);          // lokal visning
+        try { saveSpotlight(data.payload); } catch {}
+        setNowTick(Date.now());                   // kick rerender
       }
     };
     ch.addEventListener ? ch.addEventListener("message", onMsg) : (ch.onmessage = onMsg);
@@ -521,18 +532,24 @@ function WallPage({ total, uniqueNames, latestAt }) {
     };
   }, []);
 
-  const remainingMs = spotlight?.until ? Math.max(0, spotlight.until - nowTick) : 0;
+  // Velg gjeldende spotlight (lokal > storage)
+  const currentSpotlight = localSpotlight || spotlightFromStorage;
+  const remainingMs = currentSpotlight?.until ? Math.max(0, currentSpotlight.until - nowTick) : 0;
 
-  // Smooth exit
+  // Smooth exit: la overlay fade ut, rydd så state og storage
   useEffect(() => {
-    if (!spotlight?.active) return;
+    const active = currentSpotlight?.active;
+    if (!active) return;
     if (remainingMs <= 0 && !overlayExiting) {
       setOverlayExiting(true);
-      clearSpotlight();
-      const t = setTimeout(() => setOverlayExiting(false), 450);
+      const t = setTimeout(() => {
+        setOverlayExiting(false);
+        setLocalSpotlight(null);
+        clearSpotlight();
+      }, 450);
       return () => clearTimeout(t);
     }
-  }, [remainingMs, spotlight?.active, overlayExiting]);
+  }, [remainingMs, currentSpotlight?.active, overlayExiting]);
 
   const onSubmit = (e) => {
     e.preventDefault();
@@ -550,7 +567,7 @@ function WallPage({ total, uniqueNames, latestAt }) {
     nameRef.current?.focus();
   };
 
-  const showOverlay = (spotlight?.active && remainingMs > 0) || overlayExiting;
+  const showOverlay = (currentSpotlight?.active && remainingMs > 0) || overlayExiting;
   const remainingSec = Math.ceil(remainingMs / 1000);
 
   return (
@@ -558,7 +575,8 @@ function WallPage({ total, uniqueNames, latestAt }) {
       {showOverlay && (
         <SpotlightOverlay exiting={overlayExiting}>
           <SpotlightInner>
-            <SpotlightTitle>{spotlight?.message || SPOTLIGHT_MESSAGE}</SpotlightTitle>
+            <SpotlightKicker>Takk for at du kommer!</SpotlightKicker>
+            <SpotlightTitle>{currentSpotlight?.message || SPOTLIGHT_MESSAGE}</SpotlightTitle>
             {!overlayExiting && <SpotlightSubtitle>Tilbake om {remainingSec}s</SpotlightSubtitle>}
           </SpotlightInner>
         </SpotlightOverlay>
@@ -709,12 +727,17 @@ function AdminPanel() {
   };
   const logout = () => { localStorage.removeItem(AUTH_KEY); window.dispatchEvent(new StorageEvent("storage", { key: AUTH_KEY })); };
 
-  // Spotlight-trigger (30s) — sender både via BroadcastChannel (instant) og localStorage (persist/fallback)
+  // Spotlight-trigger: generér unikt id hver gang for sikker re-render
   const triggerSpotlight = () => {
-    const obj = { active: true, message: SPOTLIGHT_MESSAGE, until: Date.now() + SPOTLIGHT_SECONDS * 1000 };
-    saveSpotlight(obj); // persist + storage event
+    const obj = {
+      id: uid(),
+      active: true,
+      message: SPOTLIGHT_MESSAGE,
+      until: Date.now() + SPOTLIGHT_SECONDS * 1000
+    };
+    saveSpotlight(obj);                              // persist + storage event
     const ch = getBC();
-    ch?.postMessage({ type: "spotlight", payload: obj }); // instant sync
+    ch?.postMessage({ type: "spotlight", payload: obj }); // instant sync alle visninger
   };
 
   return (
