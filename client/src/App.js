@@ -11,13 +11,18 @@ import styled, { createGlobalStyle } from "styled-components";
  * - Vinyl-ikon spinner sakte + får rask "boost" ved innsending
  * - Event: Vollen Vinbar | Laget av Vintra Studio
  * - Vannmerke-logo bak publikumsveggen (svakt synlig)
- * - NYTT: bedre mobiltilpasning + skjul sorte topp-knapper på mobil
+ * - Mobiltilpasset, skjuler topp-knapper på mobil
+ * - ⭐ Stjerne-knapp med teller + tekst: "Trykk om du liker DJ-en!"
  */
 
 // ===================== Config =====================
 const ADMIN_PASSWORD = "Secker1408";      // endre før deploy
 const STORAGE_KEY = "dj_wishes_v5";       // bump for å nullstille
 const AUTH_KEY = "dj_admin_authed";
+
+// Stjerner (likes)
+const STAR_KEY = "dj_wishes_stars_v1";       // teller
+const STAR_VOTED_KEY = "dj_wishes_star_vote_v1"; // om denne nettleseren allerede har likt
 
 // Bytt til din egen logo (PNG/SVG). Tom streng = ingen logo.
 const WALL_WATERMARK_URL = "/vinbar.png";
@@ -69,6 +74,26 @@ function useLocalStorageSync(key, parser) {
   return useMemo(() => parser(), [parser, tick]);
 }
 
+// Stars (likes)
+function loadStars() {
+  try {
+    const raw = localStorage.getItem(STAR_KEY);
+    return raw ? Math.max(0, parseInt(raw, 10) || 0) : 0;
+  } catch { return 0; }
+}
+function saveStars(n) {
+  localStorage.setItem(STAR_KEY, String(Math.max(0, n)));
+  window.dispatchEvent(new StorageEvent("storage", { key: STAR_KEY }));
+}
+function getVoted() {
+  return localStorage.getItem(STAR_VOTED_KEY) === "1";
+}
+function setVotedLocal(v) {
+  if (v) localStorage.setItem(STAR_VOTED_KEY, "1");
+  else localStorage.removeItem(STAR_VOTED_KEY);
+  window.dispatchEvent(new StorageEvent("storage", { key: STAR_VOTED_KEY }));
+}
+
 // ===================== Vinyl SVG =====================
 function Vinyl({ width = 64, height = 64 }) {
   return (
@@ -115,6 +140,25 @@ function Vinyl({ width = 64, height = 64 }) {
   );
 }
 
+// ===================== Star Icon =====================
+function StarIcon({ active, size = 28 }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
+      <defs>
+        <linearGradient id="starGrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#22d3ee"/><stop offset="50%" stopColor="#8b5cf6"/><stop offset="100%" stopColor="#ff2bd1"/>
+        </linearGradient>
+      </defs>
+      <path
+        d="M12 2.5l2.9 5.88 6.5.95-4.7 4.58 1.11 6.47L12 17.9l-5.81 3.48 1.11-6.47-4.7-4.58 6.5-.95L12 2.5z"
+        fill={active ? "url(#starGrad)" : "none"}
+        stroke={active ? "url(#starGrad)" : "#cbd5e1"}
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
 // ===================== Layout =====================
 const AppWrap = styled.div`
   height: 100vh;
@@ -142,6 +186,35 @@ const EventTag = styled.span`
   display: inline-block; margin-top: 4px; font-size: clamp(11px, 2.8vw, 12px);
   padding: 4px 8px; border-radius: 999px;
   background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+`;
+
+// ⭐ Star block (synlig også på mobil)
+const StarBlock = styled.div`
+  display: flex; align-items: center; gap: 10px;
+  margin-left: auto; margin-right: 12px;
+  flex-wrap: wrap;
+`;
+
+const StarCaption = styled.span`
+  font-size: 12px; opacity: .9; white-space: nowrap;
+`;
+
+const StarButton = styled.button`
+  appearance: none; border: 1px solid rgba(255,255,255,0.14);
+  background: linear-gradient(135deg, rgba(255,255,255,0.10), rgba(255,255,255,0.06));
+  backdrop-filter: blur(8px);
+  color: #fff; font-weight: 800; letter-spacing: .2px;
+  padding: 8px 12px; border-radius: 14px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px;
+  transition: transform .12s ease, border-color .2s ease, box-shadow .2s ease;
+  &:hover { transform: translateY(-1px); border-color: rgba(255,255,255,0.3); }
+  &:active { transform: translateY(0); }
+  &.pop { animation: starPop .3s ease; }
+  @keyframes starPop { 0%{transform:scale(1)} 50%{transform:scale(1.08)} 100%{transform:scale(1)} }
+`;
+
+const StarCount = styled.span`
+  font-size: 14px; opacity: .9;
 `;
 
 const Nav = styled.nav`
@@ -270,7 +343,7 @@ const NameCard = styled.div`
 const Time = styled.div`font-size: 11px; opacity: .6; margin-top: 4px;`;
 const EmptyState = styled.div`opacity: .7; text-align: center; padding: 24px; font-size: 14px;`;
 
-// Stats (gjort til egen styled for mobil-grid)
+// Stats
 const StatsRow = styled.div`
   display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0,1fr));
   @media (max-width: 640px) { grid-template-columns: 1fr 1fr; }
@@ -295,12 +368,37 @@ const AdminGate = styled(Panel)`max-width: 520px; margin: 0 auto; display: grid;
 export default function App() {
   const route = useHashRoute();
   const wishes = useLocalStorageSync(STORAGE_KEY, loadWishes);
+  const stars = useLocalStorageSync(STAR_KEY, loadStars);
+  const [voted, setVotedState] = useState(() => getVoted());
+
+  // hold voted i sync mellom faner
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (!e || e.key === STAR_VOTED_KEY) setVotedState(getVoted());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   const total = wishes.length;
   const uniqueNames = new Set(wishes.map(w => w.name.trim().toLowerCase())).size;
   const latestAt = wishes[0]?.createdAt ? new Date(wishes[0].createdAt) : null;
 
   const go = (path) => () => { window.location.hash = path; };
+
+  const toggleStar = () => {
+    const el = document.getElementById("star-cta");
+    if (el) { el.classList.remove("pop"); void el.offsetWidth; el.classList.add("pop"); }
+    if (voted) {
+      saveStars(Math.max(0, stars - 1));
+      setVotedState(false);
+      setVotedLocal(false);
+    } else {
+      saveStars(stars + 1);
+      setVotedState(true);
+      setVotedLocal(true);
+    }
+  };
 
   return (
     <AppWrap>
@@ -314,6 +412,15 @@ export default function App() {
             <EventTag>Event: Vollen Vinbar</EventTag>
           </TitleWrap>
         </Brand>
+
+        {/* ⭐ Like-knapp + tekst, synlig også på mobil */}
+        <StarBlock>
+          <StarCaption>Trykk om du liker DJ-en!</StarCaption>
+          <StarButton id="star-cta" onClick={toggleStar} aria-label={voted ? "Fjern stjerne" : "Gi en stjerne"} title="Trykk om du liker DJ-en!">
+            <StarIcon active={voted} />
+            <StarCount>{stars}</StarCount>
+          </StarButton>
+        </StarBlock>
 
         {/* Skjules på mobil av media query i <Nav> */}
         <Nav>
