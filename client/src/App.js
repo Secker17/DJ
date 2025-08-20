@@ -1,33 +1,40 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import styled, { createGlobalStyle } from "styled-components";
+import styled, { createGlobalStyle, keyframes } from "styled-components";
 
 /**
  * DJ Wish Wall — React + styled-components
  * - Venstre: Skjema (request) | Høyre: Publikumsvegg (output)
- * - Veggen viser KUN navnet, starter ØVERST og er midtstilt horisontalt
+ * - Veggen viser KUN navnet, starter ØVERST og er horisontalt midtstilt
  * - Admin på #/admin (endre passord under)
- * - localStorage + live sync
+ * - localStorage + live sync + BroadcastChannel (instant uten refresh)
  * - 100vh layout; paneler scroller inni seg ved behov
- * - Vinyl-ikon spinner sakte + får rask "boost" ved innsending
+ * - Vinyl-ikon spinner sakte + “boost” ved innsending
  * - Event: Vollen Vinbar | Laget av Vintra Studio
  * - Vannmerke-logo bak publikumsveggen (svakt synlig)
  * - Mobiltilpasset, skjuler topp-knapper på mobil
- * - ⭐ Stjerne-knapp med teller + tekst: "Trykk om du liker DJ-en!"
+ * - ⭐ Stjerne-knapp + tekst: "Trykk om du liker DJ-en!"
+ * - Admin-knapp viser “HAGEN VINBAR” i 30s med smooth inn/ut
  */
 
 // ===================== Config =====================
-const ADMIN_PASSWORD = "Secker1408";      // endre før deploy
-const STORAGE_KEY = "dj_wishes_v5";       // bump for å nullstille
+const ADMIN_PASSWORD = "Secker1408";
+const STORAGE_KEY = "dj_wishes_v5";
 const AUTH_KEY = "dj_admin_authed";
 
 // Stjerner (likes)
-const STAR_KEY = "dj_wishes_stars_v1";       // teller
-const STAR_VOTED_KEY = "dj_wishes_star_vote_v1"; // om denne nettleseren allerede har likt
+const STAR_KEY = "dj_wishes_stars_v1";
+const STAR_VOTED_KEY = "dj_wishes_star_vote_v1";
 
-// Bytt til din egen logo (PNG/SVG). Tom streng = ingen logo.
+// Spotlight-overlay
+const SPOTLIGHT_KEY = "dj_wishes_spotlight_v1"; // {active:boolean, message:string, until:number}
+const SPOTLIGHT_SECONDS = 30;
+const SPOTLIGHT_MESSAGE = "HAGEN VINBAR";
+
+// Channel for instant cross-tab messaging
+const CHANNEL_NAME = "dj_wish_events";
+
+// Logo bak veggen
 const WALL_WATERMARK_URL = "/vinbar.png";
-
-// Styrke/størrelse på vannmerket
 const WATERMARK_OPACITY = 0.30;
 const WATERMARK_MAX_W = "70%";
 const WATERMARK_MAX_H = "70%";
@@ -55,10 +62,8 @@ function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 function loadWishes() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
+  try { const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : []; }
+  catch { return []; }
 }
 function saveWishes(list) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
@@ -74,24 +79,50 @@ function useLocalStorageSync(key, parser) {
   return useMemo(() => parser(), [parser, tick]);
 }
 
+// BroadcastChannel helper
+let bc;
+function getBC() {
+  try {
+    if ("BroadcastChannel" in window) {
+      if (!bc) bc = new BroadcastChannel(CHANNEL_NAME);
+      return bc;
+    }
+  } catch {}
+  return null;
+}
+
 // Stars (likes)
 function loadStars() {
-  try {
-    const raw = localStorage.getItem(STAR_KEY);
-    return raw ? Math.max(0, parseInt(raw, 10) || 0) : 0;
-  } catch { return 0; }
+  try { const raw = localStorage.getItem(STAR_KEY); return raw ? Math.max(0, parseInt(raw, 10) || 0) : 0; }
+  catch { return 0; }
 }
 function saveStars(n) {
   localStorage.setItem(STAR_KEY, String(Math.max(0, n)));
   window.dispatchEvent(new StorageEvent("storage", { key: STAR_KEY }));
 }
-function getVoted() {
-  return localStorage.getItem(STAR_VOTED_KEY) === "1";
-}
+function getVoted() { return localStorage.getItem(STAR_VOTED_KEY) === "1"; }
 function setVotedLocal(v) {
   if (v) localStorage.setItem(STAR_VOTED_KEY, "1");
   else localStorage.removeItem(STAR_VOTED_KEY);
   window.dispatchEvent(new StorageEvent("storage", { key: STAR_VOTED_KEY }));
+}
+
+// Spotlight
+function loadSpotlight() {
+  try {
+    const raw = localStorage.getItem(SPOTLIGHT_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    return obj && typeof obj === "object" ? obj : null;
+  } catch { return null; }
+}
+function saveSpotlight(obj) {
+  localStorage.setItem(SPOTLIGHT_KEY, JSON.stringify(obj));
+  window.dispatchEvent(new StorageEvent("storage", { key: SPOTLIGHT_KEY }));
+}
+function clearSpotlight() {
+  localStorage.removeItem(SPOTLIGHT_KEY);
+  window.dispatchEvent(new StorageEvent("storage", { key: SPOTLIGHT_KEY }));
 }
 
 // ===================== Vinyl SVG =====================
@@ -159,13 +190,57 @@ function StarIcon({ active, size = 28 }) {
   );
 }
 
+// ===================== Spotlight overlay (smooth inn/ut) =====================
+const neonPulse = keyframes`
+  0% { filter: drop-shadow(0 0 0px rgba(255,255,255,0.4)); }
+  100% { filter: drop-shadow(0 0 18px rgba(255,255,255,0.95)); }
+`;
+const shimmer = keyframes`
+  0% { background-position: -200% 50%; }
+  100% { background-position: 200% 50%; }
+`;
+const fadeIn = keyframes`
+  from { opacity: 0; transform: scale(0.98) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+`;
+const fadeOut = keyframes`
+  from { opacity: 1; transform: scale(1) translateY(0); }
+  to   { opacity: 0; transform: scale(0.98) translateY(8px); }
+`;
+
+const SpotlightOverlay = styled.div`
+  position: fixed; inset: 0; z-index: 9999;
+  background:
+    radial-gradient(1200px 800px at 20% 10%, #4812ff33, transparent 60%),
+    radial-gradient(1000px 700px at 90% 20%, #ff2bd133, transparent 60%),
+    radial-gradient(900px 1000px at 50% 120%, #00ffcc22, transparent 60%),
+    rgba(6,6,10,0.96);
+  display: flex; align-items: center; justify-content: center; text-align: center;
+  padding: 24px;
+  animation: ${props => props.exiting ? fadeOut : fadeIn} 420ms ease forwards;
+`;
+const SpotlightInner = styled.div`max-width: 90ch;`;
+const SpotlightTitle = styled.h1`
+  margin: 0 0 10px 0;
+  font-family: Montserrat, Inter, sans-serif;
+  font-weight: 900;
+  letter-spacing: 4px;
+  font-size: clamp(36px, 9vw, 120px);
+  line-height: 1.05;
+  background: linear-gradient(90deg, #22d3ee, #8b5cf6, #ff2bd1, #22d3ee);
+  background-size: 300% 100%;
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent;
+  animation: ${shimmer} 6s linear infinite, ${neonPulse} 2.6s ease-in-out infinite alternate;
+`;
+const SpotlightSubtitle = styled.div`opacity: .9; font-size: clamp(14px, 2.8vw, 18px);`;
+
 // ===================== Layout =====================
 const AppWrap = styled.div`
   height: 100vh;
   display: grid;
   grid-template-rows: auto 1fr auto;
 `;
-
 const TopBar = styled.header`
   position: sticky; top: 0; z-index: 10;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -174,7 +249,6 @@ const TopBar = styled.header`
   backdrop-filter: blur(10px) saturate(120%);
   border-bottom: 1px solid rgba(255,255,255,0.07);
 `;
-
 const Brand = styled.div`display: flex; align-items: center; gap: 12px; min-width: 0;`;
 const TitleWrap = styled.div`display: grid; line-height: 1.1; min-width: 0;`;
 const Title = styled.h1`
@@ -188,17 +262,13 @@ const EventTag = styled.span`
   background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
 `;
 
-// ⭐ Star block (synlig også på mobil)
+// ⭐ Star block
 const StarBlock = styled.div`
   display: flex; align-items: center; gap: 10px;
   margin-left: auto; margin-right: 12px;
   flex-wrap: wrap;
 `;
-
-const StarCaption = styled.span`
-  font-size: 12px; opacity: .9; white-space: nowrap;
-`;
-
+const StarCaption = styled.span`font-size: 12px; opacity: .9; white-space: nowrap;`;
 const StarButton = styled.button`
   appearance: none; border: 1px solid rgba(255,255,255,0.14);
   background: linear-gradient(135deg, rgba(255,255,255,0.10), rgba(255,255,255,0.06));
@@ -212,14 +282,10 @@ const StarButton = styled.button`
   &.pop { animation: starPop .3s ease; }
   @keyframes starPop { 0%{transform:scale(1)} 50%{transform:scale(1.08)} 100%{transform:scale(1)} }
 `;
-
-const StarCount = styled.span`
-  font-size: 14px; opacity: .9;
-`;
+const StarCount = styled.span`font-size: 14px; opacity: .9;`;
 
 const Nav = styled.nav`
   display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;
-  /* Skjul alle topp-knapper på mobil */
   @media (max-width: 640px) { display: none; }
 `;
 const NavButton = styled.button`
@@ -283,14 +349,9 @@ const Submit = styled.button`
 `;
 const Hint = styled.p`margin: 6px 0 0; font-size: 12px; opacity: .75;`;
 
-// Wall (øverst + horisontalt midtstilt)
-const WallWrap = styled(Panel)`
-  display: grid; grid-template-rows: auto 1fr; min-height: 0; height: 100%;
-`;
-
+// Wall
+const WallWrap = styled(Panel)`display: grid; grid-template-rows: auto 1fr; min-height: 0; height: 100%;`;
 const ContentLayer = styled.div`position: relative; z-index: 1;`;
-
-// Vannmerke-logo (bak alt innhold i WallWrap)
 const Watermark = styled.div`
   position: absolute; inset: 0; z-index: 0;
   display: flex; align-items: center; justify-content: center; pointer-events: none;
@@ -307,13 +368,7 @@ const Watermark = styled.div`
     img { max-width: 80%; max-height: 60%; }
   }
 `;
-
-// Scrollbeholder for veggen
-const NamesViewport = styled.div`
-  position: relative; z-index: 1; height: 100%; overflow: auto;
-`;
-
-// Grid inni — øverst + horisontalt midtstilt
+const NamesViewport = styled.div`position: relative; z-index: 1; height: 100%; overflow: auto;`;
 const NamesGrid = styled.div`
   padding: 8px 6px 8px 0;
   display: grid;
@@ -321,23 +376,16 @@ const NamesGrid = styled.div`
   grid-auto-rows: minmax(56px, auto);
   gap: 12px;
   height: max-content;
-  align-content: start;      /* legg rader helt øverst */
-  justify-content: center;   /* midtstill kolonnene horisontalt */
-
+  align-content: start;
+  justify-content: center;
   @media (max-width: 640px) {
     grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-    gap: 10px;
-    padding-right: 4px;
+    gap: 10px; padding-right: 4px;
   }
 `;
-
 const NameCard = styled.div`
   background: rgba(255,255,255,0.08);
-  border-radius: 12px;
-  padding: 16px;
-  text-align: center;
-  font-weight: 800;
-  backdrop-filter: blur(8px);
+  border-radius: 12px; padding: 16px; text-align: center; font-weight: 800; backdrop-filter: blur(8px);
   @media (max-width: 640px) { padding: 12px; }
 `;
 const Time = styled.div`font-size: 11px; opacity: .6; margin-top: 4px;`;
@@ -371,11 +419,8 @@ export default function App() {
   const stars = useLocalStorageSync(STAR_KEY, loadStars);
   const [voted, setVotedState] = useState(() => getVoted());
 
-  // hold voted i sync mellom faner
   useEffect(() => {
-    const onStorage = (e) => {
-      if (!e || e.key === STAR_VOTED_KEY) setVotedState(getVoted());
-    };
+    const onStorage = (e) => { if (!e || e.key === STAR_VOTED_KEY) setVotedState(getVoted()); };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
@@ -389,54 +434,34 @@ export default function App() {
   const toggleStar = () => {
     const el = document.getElementById("star-cta");
     if (el) { el.classList.remove("pop"); void el.offsetWidth; el.classList.add("pop"); }
-    if (voted) {
-      saveStars(Math.max(0, stars - 1));
-      setVotedState(false);
-      setVotedLocal(false);
-    } else {
-      saveStars(stars + 1);
-      setVotedState(true);
-      setVotedLocal(true);
-    }
+    if (voted) { saveStars(Math.max(0, stars - 1)); setVotedState(false); setVotedLocal(false); }
+    else { saveStars(stars + 1); setVotedState(true); setVotedLocal(true); }
   };
 
   return (
     <AppWrap>
       <Global />
       <TopBar>
-        <Brand>
-          <Vinyl width={64} height={64} />
-          <TitleWrap>
-            <Title>DJ Wish Wall</Title>
-            <SubTitle>Send inn låtønsker — navnet ditt vises på veggen ✨</SubTitle>
-            <EventTag>Event: Vollen Vinbar</EventTag>
-          </TitleWrap>
-        </Brand>
-
-        {/* ⭐ Like-knapp + tekst, synlig også på mobil */}
+        <Brand><Vinyl width={64} height={64} /></Brand>
+        <TitleWrap>
+          <Title>DJ Wish Wall</Title>
+          <SubTitle>Send inn låtønsker — navnet ditt vises på veggen ✨</SubTitle>
+          <EventTag>Event: Vollen Vinbar</EventTag>
+        </TitleWrap>
         <StarBlock>
           <StarCaption>Trykk om du liker DJ-en!</StarCaption>
-          <StarButton id="star-cta" onClick={toggleStar} aria-label={voted ? "Fjern stjerne" : "Gi en stjerne"} title="Trykk om du liker DJ-en!">
-            <StarIcon active={voted} />
-            <StarCount>{stars}</StarCount>
+          <StarButton id="star-cta" onClick={toggleStar} title="Trykk om du liker DJ-en!">
+            <StarIcon active={voted} /><StarCount>{stars}</StarCount>
           </StarButton>
         </StarBlock>
-
-        {/* Skjules på mobil av media query i <Nav> */}
         <Nav>
           <NavButton onClick={go("")}>Publikumsvegg</NavButton>
           <NavButton onClick={go("/admin")}>Admin</NavButton>
-          <a href="https://vintrastudio.com" target="_blank" rel="noreferrer">
-            <NavButton>Laget av Vintra Studio</NavButton>
-          </a>
+          <a href="https://vintrastudio.com" target="_blank" rel="noreferrer"><NavButton>Laget av Vintra Studio</NavButton></a>
         </Nav>
       </TopBar>
 
-      {route === "/admin" ? (
-        <AdminPage />
-      ) : (
-        <WallPage total={total} uniqueNames={uniqueNames} latestAt={latestAt} />
-      )}
+      {route === "/admin" ? <AdminPage /> : <WallPage total={total} uniqueNames={uniqueNames} latestAt={latestAt} />}
 
       <Footer>© {new Date().getFullYear()} DJ Wish Wall — Laget av Vintra Studio.</Footer>
     </AppWrap>
@@ -452,25 +477,62 @@ function useHashRoute() {
   }, []);
   return route;
 }
-function cleanHash() {
-  const h = window.location.hash.replace(/^#/, "");
-  return h || "/";
-}
+function cleanHash() { const h = window.location.hash.replace(/^#/, ""); return h || "/"; }
 
 // ===================== Pages =====================
 function WallPage({ total, uniqueNames, latestAt }) {
   const wishes = useLocalStorageSync(STORAGE_KEY, loadWishes);
+  const spotlight = useLocalStorageSync(SPOTLIGHT_KEY, loadSpotlight);
+
   const [name, setName] = useState("");
   const [wish, setWish] = useState("");
   const [toast, setToast] = useState("");
+  const [nowTick, setNowTick] = useState(Date.now());
+  const [overlayExiting, setOverlayExiting] = useState(false);
+
   const nameRef = useRef(null);
   const viewportRef = useRef(null);
 
   useEffect(() => { nameRef.current?.focus(); }, []);
+  useEffect(() => { const vp = viewportRef.current; if (vp) vp.scrollTop = 0; }, [wishes.length]);
+
+  // Tikk for nedtelling
   useEffect(() => {
-    const vp = viewportRef.current;
-    if (vp) vp.scrollTop = 0; // alltid topp
-  }, [wishes.length]);
+    if (!spotlight || !spotlight.until) return;
+    const t = setInterval(() => setNowTick(Date.now()), 200);
+    return () => clearInterval(t);
+  }, [spotlight?.until]);
+
+  // Lytt direkte på BroadcastChannel for instant update
+  useEffect(() => {
+    const ch = getBC();
+    if (!ch) return;
+    const onMsg = (e) => {
+      const data = e.data;
+      if (data?.type === "spotlight" && data.payload) {
+        // Oppdater både localStorage (for persist) og lokal tikk
+        saveSpotlight(data.payload);
+        setNowTick(Date.now());
+      }
+    };
+    ch.addEventListener ? ch.addEventListener("message", onMsg) : (ch.onmessage = onMsg);
+    return () => {
+      ch.removeEventListener ? ch.removeEventListener("message", onMsg) : (ch.onmessage = null);
+    };
+  }, []);
+
+  const remainingMs = spotlight?.until ? Math.max(0, spotlight.until - nowTick) : 0;
+
+  // Smooth exit
+  useEffect(() => {
+    if (!spotlight?.active) return;
+    if (remainingMs <= 0 && !overlayExiting) {
+      setOverlayExiting(true);
+      clearSpotlight();
+      const t = setTimeout(() => setOverlayExiting(false), 450);
+      return () => clearTimeout(t);
+    }
+  }, [remainingMs, spotlight?.active, overlayExiting]);
 
   const onSubmit = (e) => {
     e.preventDefault();
@@ -488,67 +550,77 @@ function WallPage({ total, uniqueNames, latestAt }) {
     nameRef.current?.focus();
   };
 
+  const showOverlay = (spotlight?.active && remainingMs > 0) || overlayExiting;
+  const remainingSec = Math.ceil(remainingMs / 1000);
+
   return (
-    <Page>
-      {/* VENSTRE: Skjema */}
-      <Panel>
-        <GradientBar />
-        <PanelTitle>Send inn ditt låtønske</PanelTitle>
-        <Divider />
-        <Form onSubmit={onSubmit}>
-          <div>
-            <Label>Navn</Label>
-            <Input ref={nameRef} placeholder="F.eks. Martin" value={name}
-                   onChange={(e)=>setName(e.target.value)} inputMode="text" autoComplete="name" />
-          </div>
-          <div>
-            <Label>Ønske (artist / låt / melding til DJ)</Label>
-            <TextArea placeholder="Skriv ønsket ditt her…" value={wish} onChange={(e)=>setWish(e.target.value)} />
-            <Hint>På publikumsveggen vises kun navnet ditt. Selve ønsket er kun synlig for DJ (admin).</Hint>
-          </div>
-          <Submit type="submit">Send ønske</Submit>
-          {toast && <Hint>{toast}</Hint>}
-        </Form>
+    <>
+      {showOverlay && (
+        <SpotlightOverlay exiting={overlayExiting}>
+          <SpotlightInner>
+            <SpotlightTitle>{spotlight?.message || SPOTLIGHT_MESSAGE}</SpotlightTitle>
+            {!overlayExiting && <SpotlightSubtitle>Tilbake om {remainingSec}s</SpotlightSubtitle>}
+          </SpotlightInner>
+        </SpotlightOverlay>
+      )}
 
-        <Divider />
-        <PanelTitle>Statistikk</PanelTitle>
-        <StatsRow>
-          <StatBox label="Totalt innsendt" value={total} />
-          <StatBox label="Unike navn" value={uniqueNames} />
-          <StatBox label="Siste innsendelse" value={latestAt ? timeAgo(latestAt) : "—"} />
-        </StatsRow>
-      </Panel>
-
-      {/* HØYRE: Publikumsvegg + vannmerke */}
-      <WallWrap>
-        <GradientBar />
-        {WALL_WATERMARK_URL && (
-          <Watermark>
-            <img src={WALL_WATERMARK_URL} alt="Vannmerke logo" />
-          </Watermark>
-        )}
-
-        <ContentLayer>
-          <PanelTitle>Publikumsveggen (viser bare navn)</PanelTitle>
+      <Page>
+        {/* VENSTRE: Skjema */}
+        <Panel>
+          <GradientBar />
+          <PanelTitle>Send inn ditt låtønske</PanelTitle>
           <Divider />
-        </ContentLayer>
+          <Form onSubmit={onSubmit}>
+            <div>
+              <Label>Navn</Label>
+              <Input ref={nameRef} placeholder="F.eks. Martin" value={name}
+                    onChange={(e)=>setName(e.target.value)} inputMode="text" autoComplete="name" />
+            </div>
+            <div>
+              <Label>Ønske (artist / låt / melding til DJ)</Label>
+              <TextArea placeholder="Skriv ønsket ditt her…" value={wish} onChange={(e)=>setWish(e.target.value)} />
+              <Hint>På publikumsveggen vises kun navnet ditt. Selve ønsket er kun synlig for DJ (admin).</Hint>
+            </div>
+            <Submit type="submit">Send ønske</Submit>
+            {toast && <Hint>{toast}</Hint>}
+          </Form>
 
-        <NamesViewport ref={viewportRef}>
-          {wishes.length === 0 ? (
-            <EmptyState>Ingen innsendelser enda. Vær den første! ✨</EmptyState>
-          ) : (
-            <NamesGrid>
-              {wishes.map(w => (
-                <NameCard key={w.id} title={new Date(w.createdAt).toLocaleString()}>
-                  <div>{w.name}</div>
-                  <Time>{timeAgo(new Date(w.createdAt))}</Time>
-                </NameCard>
-              ))}
-            </NamesGrid>
+          <Divider />
+          <PanelTitle>Statistikk</PanelTitle>
+          <StatsRow>
+            <StatBox label="Totalt innsendt" value={total} />
+            <StatBox label="Unike navn" value={uniqueNames} />
+            <StatBox label="Siste innsendelse" value={latestAt ? timeAgo(latestAt) : "—"} />
+          </StatsRow>
+        </Panel>
+
+        {/* HØYRE: Publikumsvegg */}
+        <WallWrap>
+          <GradientBar />
+          {WALL_WATERMARK_URL && (
+            <Watermark><img src={WALL_WATERMARK_URL} alt="Vannmerke logo" /></Watermark>
           )}
-        </NamesViewport>
-      </WallWrap>
-    </Page>
+          <ContentLayer>
+            <PanelTitle>Publikumsveggen (viser bare navn)</PanelTitle>
+            <Divider />
+          </ContentLayer>
+          <NamesViewport ref={viewportRef}>
+            {wishes.length === 0 ? (
+              <EmptyState>Ingen innsendelser enda. Vær den første! ✨</EmptyState>
+            ) : (
+              <NamesGrid>
+                {wishes.map(w => (
+                  <NameCard key={w.id} title={new Date(w.createdAt).toLocaleString()}>
+                    <div>{w.name}</div>
+                    <Time>{timeAgo(new Date(w.createdAt))}</Time>
+                  </NameCard>
+                ))}
+              </NamesGrid>
+            )}
+          </NamesViewport>
+        </WallWrap>
+      </Page>
+    </>
   );
 }
 
@@ -619,6 +691,7 @@ function AdminLogin({ onAttempt, attempted }) {
 function AdminPanel() {
   const wishes = useLocalStorageSync(STORAGE_KEY, loadWishes);
   const [filter, setFilter] = useState("");
+
   const filtered = wishes.filter(w => {
     const q = filter.trim().toLowerCase();
     if (!q) return true;
@@ -636,6 +709,14 @@ function AdminPanel() {
   };
   const logout = () => { localStorage.removeItem(AUTH_KEY); window.dispatchEvent(new StorageEvent("storage", { key: AUTH_KEY })); };
 
+  // Spotlight-trigger (30s) — sender både via BroadcastChannel (instant) og localStorage (persist/fallback)
+  const triggerSpotlight = () => {
+    const obj = { active: true, message: SPOTLIGHT_MESSAGE, until: Date.now() + SPOTLIGHT_SECONDS * 1000 };
+    saveSpotlight(obj); // persist + storage event
+    const ch = getBC();
+    ch?.postMessage({ type: "spotlight", payload: obj }); // instant sync
+  };
+
   return (
     <Page>
       <Panel>
@@ -651,6 +732,15 @@ function AdminPanel() {
             <NavButton type="button" onClick={exportJson}>Eksporter JSON</NavButton>
             <NavButton type="button" onClick={logout}>Logg ut</NavButton>
             <Danger type="button" onClick={clearAll}>Tøm alle</Danger>
+          </div>
+
+          <Divider />
+
+          <div style={{display:'grid', gap:10}}>
+            <Label>Scene-kontroll</Label>
+            <NavButton type="button" onClick={triggerSpotlight}>
+              Vis HAGEN VINBAR (30s)
+            </NavButton>
           </div>
         </Form>
       </Panel>
