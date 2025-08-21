@@ -1,4 +1,4 @@
-// Spotlight.js (full-screen, 2 min, uten F/Esc-hint)
+// Spotlight.js (full-screen, 2 min, med QR)
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import styled, { keyframes, css } from "styled-components";
 
@@ -10,6 +10,14 @@ import styled, { keyframes, css } from "styled-components";
  * - durationSec?: number (default 120) — for progress
  * - onDone?: () => void
  */
+
+// ==== QR: konfigurer her ====
+// Sett URL-en som QR-koden skal peke til (full URL eller path)
+const QR_TARGET_URL = "/main"; // f.eks. "/main" eller "https://dittdomene.no/main"
+// Hvis du har et generert QR-bilde i /public, legg inn stien her.
+// Hvis tom, brukes en lett ekstern generator.
+const QR_IMG_URL = ""; // f.eks. "/qr-main.png"
+
 export default function Spotlight({
   active,
   message = "Velkommen til",
@@ -56,6 +64,26 @@ export default function Spotlight({
     const mm = String(d.getMinutes()).padStart(2, "0");
     return `${hh}:${mm}`;
   }, [until]);
+
+  // QR: lag lenke og bilde
+  const qrHref = useMemo(() => {
+    try {
+      const absolute = QR_TARGET_URL.startsWith("http")
+        ? QR_TARGET_URL
+        : (typeof window !== "undefined"
+            ? new URL(QR_TARGET_URL, window.location.origin).toString()
+            : QR_TARGET_URL);
+      return absolute;
+    } catch {
+      return QR_TARGET_URL;
+    }
+  }, []);
+
+  const qrSrc = useMemo(() => {
+    if (QR_IMG_URL) return QR_IMG_URL;
+    const size = 260;
+    return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(qrHref)}`;
+  }, [qrHref]);
 
   // Exit når ferdig
   useEffect(() => {
@@ -108,6 +136,17 @@ export default function Spotlight({
           </MetaRow>
         </Inner>
       </FullStage>
+
+      {/* QR-kort i spotlight */}
+      <QRWrap>
+        <QRCard title={`Skann for å sende inn ønske: ${qrHref}`}>
+          <QRCaption>Skann for å sende inn 🎶</QRCaption>
+          <a href={qrHref} target="_blank" rel="noreferrer" style={{ justifySelf: "center" }}>
+            <QRImg src={qrSrc} alt="QR-kode til ønske-siden" />
+          </a>
+          <QRSub>{qrHref}</QRSub>
+        </QRCard>
+      </QRWrap>
     </Overlay>
   );
 }
@@ -242,4 +281,47 @@ const FxB = styled.div`
 const FxC = styled.div`
   ${FxBase};
   background: radial-gradient(1100px 800px at 50% 120%, rgba(139,92,246,.26), transparent 60%);
+`;
+
+/* ==== QR-styles ==== */
+const QRWrap = styled.div`
+  position: absolute;
+  left: clamp(16px, 2.5vw, 28px);
+  bottom: calc(clamp(16px, 2.5vw, 28px) + env(safe-area-inset-bottom));
+  z-index: 3;
+  pointer-events: auto;
+`;
+
+const QRCard = styled.div`
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.06));
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+`;
+
+const QRCaption = styled.div`
+  font-weight: 900; letter-spacing: .5px;
+  font-size: clamp(12px, 1.6vw, 16px);
+  opacity: .95;
+`;
+
+const QRSub = styled.div`
+  font-size: clamp(11px, 1.4vw, 13px);
+  opacity: .8;
+  max-width: 48ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+`;
+
+const QRImg = styled.img`
+  width: clamp(140px, 18vw, 260px);
+  height: auto;
+  border-radius: 12px;
+  background: #fff; /* bedre kontrast for skannere */
 `;

@@ -36,6 +36,14 @@ const SIDE_MAX = 14;            // antall i sidelista
 const HERO_MAX_LEN = 160;       // trim av svært lange hero-tekster
 const SPOTLIGHT_DURATION = 120;  // sekunder — bør matche Admin-trigger
 
+// ==== QR: konfigurer her ====
+// Sett URL-en som QR-koden skal peke til (bruk full URL eller path).
+const QR_TARGET_URL = "/main"; // f.eks. "/main" eller "https://dittdomene.no/main"
+// Hvis du allerede har et generert QR-bilde i /public, legg inn stien her.
+// Hvis denne er tom, brukes en lettvekts online-generator for å lage QR automatisk.
+const QR_IMG_URL = ""; // f.eks. "/qr-main.png"
+// Start med QR synlig?
+const QR_SHOW_DEFAULT = true;
 // ===================== Utils =====================
 function useWishesRealtime() {
   const [wishes, setWishes] = useState([]);
@@ -389,6 +397,50 @@ const Tick = styled.div`
   opacity: .95;
 `;
 
+// ==== QR: styling ====
+const QRWrap = styled.div`
+  position: absolute;
+  left: clamp(16px, 2.5vw, 28px);
+  /* Ligger over tickeren – juster hvis du vil flytte den */
+  bottom: clamp(84px, 10vh, 120px);
+  z-index: 5;
+  pointer-events: auto;
+`;
+
+const QRCard = styled.div`
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: linear-gradient(135deg, rgba(255,255,255,0.12), rgba(255,255,255,0.06));
+  backdrop-filter: blur(10px);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+  transition: transform 200ms ease, box-shadow 200ms ease, opacity 200ms ease;
+  animation: ${slideUp} 320ms ease both;
+  &:hover { transform: scale(1.02); box-shadow: 0 14px 40px rgba(0,0,0,0.32); }
+`;
+
+const QRCaption = styled.div`
+  font-weight: 900; letter-spacing: .5px;
+  font-size: clamp(12px, 1.6vw, 16px);
+  opacity: .95;
+`;
+
+const QRSub = styled.div`
+  font-size: clamp(11px, 1.4vw, 13px);
+  opacity: .8;
+`;
+
+const QRImg = styled.img`
+  width: clamp(120px, 16vw, 220px);
+  height: auto;
+  border-radius: 12px;
+  background: #fff; /* bedre kontrast for skannere */
+`;
+
 // ===================== Component =====================
 export default function StageScreen() {
   const wishes = useWishesRealtime();
@@ -399,6 +451,9 @@ export default function StageScreen() {
   const [clock, setClock] = useState(formatClock());
   const [hideCursor, setHideCursor] = useState(false);
   const hideTimer = useRef(null);
+
+  // ==== QR: vis/skjul med tast 'Q' ====
+  const [showQR, setShowQR] = useState(QR_SHOW_DEFAULT);
 
   // Idle cursor hide
   const onMove = () => {
@@ -453,12 +508,13 @@ export default function StageScreen() {
 
   useEffect(() => { setIdx(0); }, [ordered.length]);
 
-  // Tastatur: ←/→ bytt, F = fullskjerm
+  // Tastatur: ←/→ bytt, F = fullskjerm, Q = vis/skjul QR
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === "ArrowRight") setIdx(i => (i + 1) % Math.max(1, ordered.length || 1));
       else if (e.key === "ArrowLeft") setIdx(i => (i - 1 + Math.max(1, ordered.length || 1)) % Math.max(1, ordered.length || 1));
       else if (e.key.toLowerCase() === "f") toggleFullscreen();
+      else if (e.key.toLowerCase() === "q") setShowQR(v => !v);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -476,6 +532,27 @@ export default function StageScreen() {
   }, [ordered]);
 
   const heroWish = hero?.wish ? trimOneLine(hero.wish, HERO_MAX_LEN) : "";
+
+  // ==== QR: finn bilde/URL ====
+  const qrHref = useMemo(() => {
+    try {
+      const absolute = QR_TARGET_URL.startsWith("http")
+        ? QR_TARGET_URL
+        : (typeof window !== "undefined"
+            ? new URL(QR_TARGET_URL, window.location.origin).toString()
+            : QR_TARGET_URL);
+      return absolute;
+    } catch {
+      return QR_TARGET_URL;
+    }
+  }, []);
+
+  const qrSrc = useMemo(() => {
+    if (QR_IMG_URL) return QR_IMG_URL;
+    // Enkel, ekstern generator. Bytt til statisk bilde i /public for 100% kontroll.
+    const size = 240;
+    return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(qrHref)}`;
+  }, [qrHref]);
 
   return (
     <Wrap onMouseMove={onMove} $hideCursor={hideCursor}>
@@ -545,6 +622,19 @@ export default function StageScreen() {
           </TickerInner>
         </TickerWrap>
       </Grid>
+
+      {/* ==== QR: flytende QR-kort (Q for å vise/skjule) ==== */}
+      {showQR && (
+        <QRWrap>
+          <QRCard title={`Skann for å sende inn ønske: ${qrHref}`}>
+            <QRCaption>Skann for å sende inn 🎶</QRCaption>
+            <a href={qrHref} target="_blank" rel="noreferrer" style={{justifySelf:'center'}}>
+              <QRImg src={qrSrc} alt="QR-kode til ønske-siden" />
+            </a>
+            <QRSub>Trykk Q for å skjule/vis • {qrHref}</QRSub>
+          </QRCard>
+        </QRWrap>
+      )}
 
       {/* Spotlight-overlay via egen komponent */}
       <Spotlight
